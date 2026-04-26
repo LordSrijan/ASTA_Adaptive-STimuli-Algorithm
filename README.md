@@ -77,13 +77,13 @@ javac src/*/*.java
 Run the main class (adjust if needed):
 
 ```
-java src.grid.Main
+java src.grid.AdaptiveStimuli.java
 ```
 
 or
 
 ```
-java src.hex.Main
+java src.hex.HexCluster_AdaptiveStimuli.java
 ```
 
 ---
