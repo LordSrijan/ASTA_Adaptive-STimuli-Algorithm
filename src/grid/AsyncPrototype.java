@@ -154,7 +154,7 @@ class CellAgent {
     }
 
     void scheduleIfNeeded() {
-
+            
         if (scheduled.compareAndSet(false, true)) {
 
             long delay =
@@ -168,7 +168,18 @@ class CellAgent {
     }
 
     void runAgent() {
+        while (!frame.running) {
 
+    try {
+
+        Thread.sleep(50);
+
+    } catch (InterruptedException e) {
+
+        Thread.currentThread().interrupt();
+        return;
+    }
+}
         try {
 
             Message msg;
@@ -409,14 +420,13 @@ class PrototypeFrame extends JFrame {
             new AtomicInteger(1);
     final int rows;
     final int cols;
-
+    volatile boolean running = false;
     final CellAgent[][] agents;
     final CopyOnWriteArrayList<TokenView> tokenViews =
             new CopyOnWriteArrayList<>();
     final ScheduledExecutorService scheduler =
             Executors.newScheduledThreadPool(
-                    Runtime.getRuntime()
-                            .availableProcessors());
+                   30);
 
     final GridPanel panel;
 
@@ -469,10 +479,93 @@ class PrototypeFrame extends JFrame {
             }
         }
 
-        panel = new GridPanel();
+       panel = new GridPanel();
 
-        add(panel);
+JButton startPause =
+        new JButton("Start");
 
+startPause.addActionListener(e -> {
+
+    running = !running;
+
+    if (running) {
+
+        startPause.setText("Pause");
+         for (int r = 0; r < rows; r++) {
+
+        for (int c = 0; c < cols; c++) {
+
+            CellAgent a = agents[r][c];
+
+            if (a.stimulus ||
+                    !a.inbox.isEmpty()) {
+
+                a.scheduleIfNeeded();
+            }
+        }
+    }
+
+    } else {
+
+        startPause.setText("Start");
+    }
+});
+ class LegendPanel extends JPanel {
+        
+        LegendPanel() {
+            setLayout(
+        new BorderLayout());
+        setLayout(new FlowLayout());
+
+        addLegend(
+                Color.CYAN,
+                "Unaware");
+
+        addLegend(
+                new Color(255,160,160),
+                "Aware");
+
+        addLegend(
+                Color.GREEN,
+                "Stimulus Source");
+
+        addLegend(
+                new Color(160,130,210),
+                "Clearing Wave");
+
+        addLegend(
+                Color.RED,
+                "Token");
+    }
+
+    void addLegend(
+            Color color,
+            String text) {
+
+        JPanel box =
+                new JPanel();
+
+        box.setBackground(color);
+
+        box.setPreferredSize(
+                new Dimension(15,15));
+
+        add(box);
+
+        add(new JLabel(text));
+    }
+}
+
+JPanel top = new JPanel();
+
+top.add(startPause);
+
+add(top, BorderLayout.NORTH);
+
+add(panel, BorderLayout.CENTER);
+add(
+        new LegendPanel(),
+        BorderLayout.SOUTH);
         panel.addMouseListener(
                 new MouseAdapter() {
 
@@ -491,7 +584,34 @@ class PrototypeFrame extends JFrame {
 
                         CellAgent a =
                                 agents[r][c];
+                        
+                           if (!running) {
 
+    if (!a.stimulus &&
+            a.stimulusId == -1) {
+
+        int id =
+                nextStimulusId.getAndIncrement();
+
+        a.stimulus = true;
+        a.stimulusId = id;
+
+        a.awareFromStimuli.add(id);
+
+    } else if (a.stimulus) {
+        a.stimulus = false;
+        a.clearingStimuli.add(
+                a.stimulusId);
+            a.post(
+            new ClearMessage(
+                    a.stimulusId));
+    }
+
+    panel.repaint();
+
+    return;
+}     
+                        
                         if (!a.stimulus) {
 
                             a.post(
@@ -505,6 +625,9 @@ class PrototypeFrame extends JFrame {
                         }
                     }
                 });
+                
+        
+               
 
         /*
          * GUI refresh only.
@@ -516,9 +639,12 @@ class PrototypeFrame extends JFrame {
 
                     long now =
                             System.currentTimeMillis();
+                        if (running) {
 
-                    tokenViews.removeIf(
-                            t -> t.expiry < now);
+                             tokenViews.removeIf(
+                                 t -> t.expiry < now);
+                        }
+
 
                     panel.repaint();
                 })
@@ -571,14 +697,20 @@ class PrototypeFrame extends JFrame {
                         g.setColor(new Color(255,160,160));
 
                     else
-                        g.setColor(Color.YELLOW);
+                        g.setColor(Color.CYAN);
 
                     g.fillRect(
                             c * cell,
                             r * cell,
                             cell - 1,
                             cell - 1);
+                    g.setColor(new Color(50,50,50));
 
+g.drawRect(
+        c * cell,
+        r * cell,
+        cell - 1,
+        cell - 1);
 
                 }
             }
