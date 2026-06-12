@@ -164,7 +164,7 @@ class ClusterFrame extends JFrame {
     Timer renderTimer;
 
     // --- Simulation Constants ---
-    final double tokenGenProb = 0.15; // The rate (lambda) the stimulus generates tokens
+    final double tokenGenProb = 0.50; // The rate (lambda) the stimulus generates tokens
     final double walkProb = 1.00;
     final int tokenMaxHops = 1200;
     final int delayMs = 300; // Base processing speed for Poisson clocks
