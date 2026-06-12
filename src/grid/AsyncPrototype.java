@@ -527,7 +527,7 @@ startPause.addActionListener(e -> {
 
         addLegend(
                 Color.GREEN,
-                "Stimulus Source");
+                "Witness");
 
         addLegend(
                 new Color(160,130,210),
