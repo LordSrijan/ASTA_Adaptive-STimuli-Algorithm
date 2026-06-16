@@ -1,4 +1,5 @@
-package hex;import javax.swing.*;
+package hex;
+import javax.swing.*;
 import javax.swing.Timer;
 import java.awt.*;
 import java.awt.event.*;
@@ -21,9 +22,13 @@ public class HexClusterWithThread {
 /* ===================== SIMULATION STATE ===================== */
 
 class Token {
-    int posIndex; 
+    int posIndex;
     int hopsLeft;
     int stimulusId;
+
+    // NEW: Persistent visual offsets so they freeze when paused
+    int ox = 0;
+    int oy = 0;
 
     Token(int pos, int hops, int sid) {
         this.posIndex = pos;
@@ -36,6 +41,7 @@ class Token {
 
 class AgentNode implements Runnable {
     final int id;
+    final ClusterFrame frame; // Access to isSpreading
     final int delayMs;
     final double tokenGenProb;
     final double walkProb;
@@ -53,8 +59,9 @@ class AgentNode implements Runnable {
     final Queue<Token> inbox = new ConcurrentLinkedQueue<>();
     final List<AgentNode> neighbors = new ArrayList<>();
 
-    AgentNode(int id, int delayMs, double tokenGenProb, double walkProb, int tokenMaxHops) {
+    AgentNode(int id, ClusterFrame frame, int delayMs, double tokenGenProb, double walkProb, int tokenMaxHops) {
         this.id = id;
+        this.frame = frame;
         this.delayMs = delayMs;
         this.tokenGenProb = tokenGenProb;
         this.walkProb = walkProb;
@@ -75,54 +82,59 @@ class AgentNode implements Runnable {
     public void run() {
         while (running) {
             try {
-                /* ---- 1. CLEARING PROPAGATION ---- */
-                if (!clearingStimuli.isEmpty()) {
-                    Set<Integer> clearsToBroadcast = new HashSet<>(clearingStimuli);
-                    for (int sid : clearsToBroadcast) {
-                        for (AgentNode nb : neighbors) {
-                            if (nb.awareFromStimuli.contains(sid)) {
-                                nb.clearingStimuli.add(sid);
-                                nb.visualClearing.put(sid, System.currentTimeMillis() + 300);
+                // Only process tokens if the simulation is actively spreading
+                if (frame.isSpreading) {
+                    /* ---- 1. CLEARING PROPAGATION ---- */
+                    if (!clearingStimuli.isEmpty()) {
+                        Set<Integer> clearsToBroadcast = new HashSet<>(clearingStimuli);
+                        for (int sid : clearsToBroadcast) {
+                            for (AgentNode nb : neighbors) {
+                                if (nb.awareFromStimuli.contains(sid)) {
+                                    nb.clearingStimuli.add(sid);
+                                    nb.visualClearing.put(sid, System.currentTimeMillis() + 400);
+                                }
                             }
+                            inbox.removeIf(t -> t.stimulusId == sid);
+                            awareFromStimuli.remove(sid);
+                            clearingStimuli.remove(sid);
                         }
-                        inbox.removeIf(t -> t.stimulusId == sid);
-                        awareFromStimuli.remove(sid);
-                        clearingStimuli.remove(sid);
-                    }
-                }
-
-                /* ---- 2. TOKEN GENERATION (The Witness) ---- */
-                // True Algorithm 1: Probabilistic emission rate (Lambda)
-                if (isStimulus && rnd.nextDouble() < tokenGenProb) {
-                    inbox.add(new Token(this.id, tokenMaxHops, stimulusId));
-                }
-
-                /* ---- 3. TOKEN PROCESSING (Algorithm 1) ---- */
-                int currentQueueSize = inbox.size();
-
-                for (int i = 0; i < currentQueueSize; i++) {
-                    Token t = inbox.poll();
-                    if (t == null) break;
-
-                    if (t.hopsLeft <= 0) continue; 
-                    if (rnd.nextDouble() >= walkProb) continue; 
-                    if (clearingStimuli.contains(t.stimulusId)) continue; 
-
-                    /* === ALGORITHM 1 STRICT ENFORCEMENT === */
-
-                    // RULE A: Unaware node consumes Token 1 and stops its spread instantly!
-                    if (!awareFromStimuli.contains(t.stimulusId)) {
-                        awareFromStimuli.add(t.stimulusId);
-                        continue; // <--- The token dies here. It is permanently destroyed!
                     }
 
-                    // RULE B: If the node is ALREADY aware (or became aware from Token 1 in this exact tick),
-                    // it safely bypasses the block above and acts as a bridge to forward Token 2.
-                    if (!neighbors.isEmpty()) {
-                        t.hopsLeft--;
-                        AgentNode next = neighbors.get(rnd.nextInt(neighbors.size()));
-                        t.posIndex = next.id;
-                        next.inbox.add(t); // Pass to neighbor
+                    /* ---- 2. TOKEN GENERATION (The Witness) ---- */
+                    if (isStimulus && rnd.nextDouble() < tokenGenProb) {
+                        inbox.add(new Token(this.id, tokenMaxHops, stimulusId));
+                    }
+
+                    /* ---- 3. TOKEN PROCESSING (Algorithm 1) ---- */
+                    int currentQueueSize = inbox.size();
+                    Set<Integer> newlyAwareThisTick = new HashSet<>();
+
+                    for (int i = 0; i < currentQueueSize; i++) {
+                        Token t = inbox.poll();
+                        if (t == null) break;
+
+                        if (t.hopsLeft <= 0) continue;
+                        if (rnd.nextDouble() >= walkProb) continue;
+                        if (clearingStimuli.contains(t.stimulusId)) continue;
+
+                        /* === ALGORITHM 1 STRICT ENFORCEMENT === */
+
+                        if (!awareFromStimuli.contains(t.stimulusId)) {
+                            awareFromStimuli.add(t.stimulusId);
+                            newlyAwareThisTick.add(t.stimulusId);
+                            continue;
+                        }
+
+                        if (newlyAwareThisTick.contains(t.stimulusId)) {
+                            continue;
+                        }
+
+                        if (!neighbors.isEmpty()) {
+                            t.hopsLeft--;
+                            AgentNode next = neighbors.get(rnd.nextInt(neighbors.size()));
+                            t.posIndex = next.id;
+                            next.inbox.add(t);
+                        }
                     }
                 }
 
@@ -164,17 +176,18 @@ class ClusterFrame extends JFrame {
     Timer renderTimer;
 
     // --- Simulation Constants ---
-    final double tokenGenProb = 0.50; // The rate (lambda) the stimulus generates tokens
+    volatile boolean isSpreading = false;
+    final double tokenGenProb = 0.50;
     final double walkProb = 1.00;
     final int tokenMaxHops = 1200;
-    final int delayMs = 300; // Base processing speed for Poisson clocks
+    final int delayMs = 300;
     int nextStimulusId = 1;
 
     final Random rnd = new Random();
     final DrawPanel drawPanel;
 
     ClusterFrame() {
-        super("Algorithm 1: Pure Token Passing Simulation");
+        super("Algorithm 1: Token Passing Simulation");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
 
         horizSpacing = (int) Math.round(1.5 * hexRadius);
@@ -187,6 +200,23 @@ class ClusterFrame extends JFrame {
         int height = gridRows * vertSpacing + hexRadius * 2 + 60;
         drawPanel.setPreferredSize(new Dimension(width, height));
 
+        // --- Buttons ---
+        JButton startStopBtn = new JButton("Start");
+        startStopBtn.setBackground(new Color(230, 126, 34));
+        startStopBtn.setForeground(Color.WHITE);
+        startStopBtn.setFocusPainted(false);
+        startStopBtn.addActionListener(e -> {
+            if (activeNodes.isEmpty()) return;
+            isSpreading = !isSpreading;
+            if (isSpreading) {
+                startStopBtn.setText("Stop");
+                startStopBtn.setBackground(new Color(192, 57, 43)); // Red
+            } else {
+                startStopBtn.setText("Start");
+                startStopBtn.setBackground(new Color(230, 126, 34)); // Orange
+            }
+        });
+
         JButton regen = new JButton("Regenerate");
         regen.setBackground(new Color(30, 144, 255));
         regen.setForeground(Color.WHITE);
@@ -194,23 +224,29 @@ class ClusterFrame extends JFrame {
         regen.addActionListener(e -> {
             stopAllThreads();
             realizedEdges.clear();
+            isSpreading = false;
+            startStopBtn.setText("Start");
+            startStopBtn.setBackground(new Color(230, 126, 34));
             randomPlaceAgents(20);
             drawPanel.repaint();
         });
 
-        JButton connect = new JButton("Connect & Start Threads");
+        JButton connect = new JButton("Connect Agents");
         connect.setBackground(new Color(46, 204, 113));
         connect.setForeground(Color.WHITE);
         connect.setFocusPainted(false);
         connect.addActionListener(e -> {
+            stopAllThreads();
             realizeMSTWithRedundancy();
             startAgentThreads();
+            drawPanel.repaint();
         });
 
         JPanel top = new JPanel(new FlowLayout(FlowLayout.LEFT, 12, 10));
         top.setBackground(new Color(248, 249, 250));
         top.add(regen);
         top.add(connect);
+        top.add(startStopBtn);
 
         add(top, BorderLayout.NORTH);
         add(new JScrollPane(drawPanel), BorderLayout.CENTER);
@@ -237,7 +273,7 @@ class ClusterFrame extends JFrame {
         stopAllThreads();
 
         for (int idx : blueAgents) {
-            AgentNode node = new AgentNode(idx, delayMs, tokenGenProb, walkProb, tokenMaxHops);
+            AgentNode node = new AgentNode(idx, this, delayMs, tokenGenProb, walkProb, tokenMaxHops);
             activeNodes.put(idx, node);
         }
 
@@ -474,10 +510,21 @@ class ClusterFrame extends JFrame {
                 public void mouseClicked(MouseEvent e) {
                     Point p = e.getPoint();
                     int clickedHole = findHoleAtPoint(p.x, p.y);
-                    if (clickedHole == -1) return;
-                    if (!activeNodes.containsKey(clickedHole)) return;
+
+                    if (clickedHole == -1)
+                        return;
+
+                    if (!blueAgents.contains(clickedHole))
+                        return;
+
+                    if (activeNodes.isEmpty()) {
+                        startAgentThreads();
+                    }
 
                     AgentNode n = activeNodes.get(clickedHole);
+
+                    if (n == null)
+                        return;
                     if (!n.isStimulus) {
                         n.isStimulus = true;
                         n.stimulusId = nextStimulusId++;
@@ -537,19 +584,16 @@ class ClusterFrame extends JFrame {
 
                 if (activeNodes.containsKey(i)) {
                     AgentNode n = activeNodes.get(i);
-                    
+
                     if (n.isStimulus) {
-                        g.setColor(new Color(60, 170, 60, 160));
+                        g.setColor(new Color(0, 255, 0));
                         g.fillOval(h.x - 20, h.y - 20, 40, 40);
                     } else if (n.isVisuallyClearing()) {
-                        g.setColor(new Color(160, 130, 210, 160));
+                        g.setColor(new Color(150, 120, 220));
                         g.fillOval(h.x - 18, h.y - 18, 36, 36);
                     } else if (n.isAware()) {
-                        g.setColor(new Color(200, 40, 40, 200)); 
-                        g.fillOval(h.x - 20, h.y - 20, 40, 40); 
-                        g.setStroke(new BasicStroke(3f));
-                        g.setColor(new Color(130, 0, 0, 220));
-                        g.drawOval(h.x - 20, h.y - 20, 40, 40);
+                        g.setColor(new Color(255, 170, 170));
+                        g.fillOval(h.x - 20, h.y - 20, 40, 40);
                     }
                 }
 
@@ -564,9 +608,13 @@ class ClusterFrame extends JFrame {
                     AgentNode n = activeNodes.get(i);
                     g.setColor(new Color(220, 20, 20));
                     for (Token t : n.inbox) {
-                        int ox = rnd.nextInt(13) - 6;
-                        int oy = rnd.nextInt(13) - 6;
-                        g.fillOval(h.x + ox - 3, h.y + oy - 3, 6, 6);
+                        // FIX: Only generate new random offset positions if spreading is active
+                        if (isSpreading) {
+                            t.ox = rnd.nextInt(13) - 6;
+                            t.oy = rnd.nextInt(13) - 6;
+                        }
+                        // Use the persistent ox/oy so they freeze in place when paused
+                        g.fillOval(h.x + t.ox - 3, h.y + t.oy - 3, 6, 6);
                     }
                 }
             }
@@ -576,12 +624,12 @@ class ClusterFrame extends JFrame {
     class LegendPanel extends JPanel {
         LegendPanel() {
             setLayout(new FlowLayout());
-            addLegend(new Color(150, 160, 170), "Inactive Node");
-            addLegend(new Color(30, 136, 229), "Active Threaded Node");
-            addLegend(new Color(60, 170, 60, 160), "Stimulus Source");
-            addLegend(new Color(200, 40, 40, 200), "Aware");
-            addLegend(new Color(160, 130, 210, 160), "Clear Wave");
+
+            addLegend(new Color(21, 101, 192), "Unaware");
+            addLegend(new Color(0,255,0), "Witness");
+            addLegend(new Color(255,170,170), "Aware");
             addLegend(Color.RED, "Token");
+            addLegend(new Color(150,120,220), "Clearing Wave");
         }
         void addLegend(Color c, String text) {
             JPanel box = new JPanel();
