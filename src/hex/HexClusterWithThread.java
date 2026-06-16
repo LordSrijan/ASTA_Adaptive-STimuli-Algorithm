@@ -12,6 +12,7 @@ import java.util.concurrent.*;
  *
  * Implements Algorithm 1: The Adaptive Stimuli Algorithm (ASA).
  * Uses a static, connected network where every agent runs on its own independent thread.
+ * VISUALS: Now features a fully scalable and centered rendering canvas.
  */
 public class HexClusterWithThread {
     public static void main(String[] args) {
@@ -26,7 +27,7 @@ class Token {
     int hopsLeft;
     int stimulusId;
 
-    // NEW: Persistent visual offsets so they freeze when paused
+    // Persistent visual offsets so they freeze when paused
     int ox = 0;
     int oy = 0;
 
@@ -177,7 +178,7 @@ class ClusterFrame extends JFrame {
 
     // --- Simulation Constants ---
     volatile boolean isSpreading = false;
-    final double tokenGenProb = 0.50;
+    final double tokenGenProb = 1.0;
     final double walkProb = 1.00;
     final int tokenMaxHops = 1200;
     final int delayMs = 300;
@@ -185,6 +186,10 @@ class ClusterFrame extends JFrame {
 
     final Random rnd = new Random();
     final DrawPanel drawPanel;
+
+    // Fixed logical dimensions to track scaling
+    final int logicalWidth;
+    final int logicalHeight;
 
     ClusterFrame() {
         super("Algorithm 1: Token Passing Simulation");
@@ -195,10 +200,11 @@ class ClusterFrame extends JFrame {
 
         buildHexGridAndHoles();
 
+        logicalWidth = gridCols * horizSpacing + hexRadius * 2 + 60;
+        logicalHeight = gridRows * vertSpacing + hexRadius * 2 + 60;
+
         drawPanel = new DrawPanel();
-        int width = gridCols * horizSpacing + hexRadius * 2 + 60;
-        int height = gridRows * vertSpacing + hexRadius * 2 + 60;
-        drawPanel.setPreferredSize(new Dimension(width, height));
+        drawPanel.setPreferredSize(new Dimension(logicalWidth, logicalHeight));
 
         // --- Buttons ---
         JButton startStopBtn = new JButton("Start");
@@ -503,13 +509,21 @@ class ClusterFrame extends JFrame {
         final int holeRadius = 5;
         final int agentRadius = 10;
 
+        // Track the current transform so mouse clicks register accurately
+        double currentScale = 1.0;
+        double currentDx = 0.0;
+        double currentDy = 0.0;
+
         DrawPanel() {
             setBackground(new Color(250, 251, 253));
             addMouseListener(new MouseAdapter() {
                 @Override
                 public void mouseClicked(MouseEvent e) {
-                    Point p = e.getPoint();
-                    int clickedHole = findHoleAtPoint(p.x, p.y);
+                    // Inverse transform the mouse coordinates back to the logical hex grid coordinates
+                    int logicalX = (int) Math.round((e.getX() - currentDx) / currentScale);
+                    int logicalY = (int) Math.round((e.getY() - currentDy) / currentScale);
+
+                    int clickedHole = findHoleAtPoint(logicalX, logicalY);
 
                     if (clickedHole == -1)
                         return;
@@ -552,9 +566,23 @@ class ClusterFrame extends JFrame {
         @Override
         protected void paintComponent(Graphics g0) {
             super.paintComponent(g0);
-            Graphics2D g = (Graphics2D) g0;
+            Graphics2D g = (Graphics2D) g0.create(); // Create a safe copy of the graphics context
             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 
+            // --- SCALE AND CENTER TRANSFORM ---
+            double scaleX = (double) getWidth() / logicalWidth;
+            double scaleY = (double) getHeight() / logicalHeight;
+            currentScale = Math.min(scaleX, scaleY);
+            if (currentScale <= 0) currentScale = 1.0;
+
+            // Center the scaled drawing
+            currentDx = (getWidth() - logicalWidth * currentScale) / 2.0;
+            currentDy = (getHeight() - logicalHeight * currentScale) / 2.0;
+
+            g.translate(currentDx, currentDy);
+            g.scale(currentScale, currentScale);
+
+            // --- ACTUAL DRAWING LOGIC ---
             g.setColor(new Color(200, 210, 220, 80));
             g.setStroke(new BasicStroke(1f));
             for (Hex h : hexes) {
@@ -608,16 +636,15 @@ class ClusterFrame extends JFrame {
                     AgentNode n = activeNodes.get(i);
                     g.setColor(new Color(220, 20, 20));
                     for (Token t : n.inbox) {
-                        // FIX: Only generate new random offset positions if spreading is active
                         if (isSpreading) {
                             t.ox = rnd.nextInt(13) - 6;
                             t.oy = rnd.nextInt(13) - 6;
                         }
-                        // Use the persistent ox/oy so they freeze in place when paused
                         g.fillOval(h.x + t.ox - 3, h.y + t.oy - 3, 6, 6);
                     }
                 }
             }
+            g.dispose(); // Release the graphics copy
         }
     }
 
